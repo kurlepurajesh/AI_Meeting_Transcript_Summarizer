@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Meeting Notes Summarizer</title>
+    <!-- Use Tailwind CSS for styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Include React and Babel for JSX compilation -->
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <!-- Include jsPDF for generating PDF downloads -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <!-- Include Mammoth.js for converting DOCX to HTML -->
+    <script src="https://unpkg.com/mammoth/mammoth.browser.min.js"></script>
+    <style>
+        /* Optional custom styles for better readability and a clean look */
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 p-8 flex justify-center items-center min-h-screen">
+    <div id="root" class="w-full max-w-4xl"></div>
+
+    <script type="text/babel">
+        // Set the URL for your backend server.
+        const BACKEND_URL = 'http://localhost:3001';
+
+        const { useState } = React;
+        const { jsPDF } = window.jspdf;
+        const mammoth = window.mammoth;
+
+        const App = () => {
+            const [transcript, setTranscript] = useState('');
+            const [fileContent, setFileContent] = useState('');
+            const [prompt, setPrompt] = useState('Summarize the following text.');
+            const [wordCount, setWordCount] = useState('');
+            const [summary, setSummary] = useState('');
+            const [recipients, setRecipients] = useState('');
+            const [loading, setLoading] = useState(false);
+            const [message, setMessage] = useState(null); // Changed to an object for better messaging
+            const [messageType, setMessageType] = useState('info'); // Added for styling messages
+
+            const handleFileChange = (e) => {
+                const file = e.target.files[0];
+                if (!file) {
+                    return;
+                }
+                const fileType = file.name.split('.').pop().toLowerCase();
+                setTranscript('');
+                
+                if (fileType === 'txt') {
+                    const reader = new FileReader();
+                    reader.onload = (event) => {
+                        setFileContent(event.target.result);
+                        setMessage({ text: `File "${file.name}" loaded successfully.`, type: 'success' });
+                    };
+                    reader.onerror = () => {
+                        setFileContent('');
+                        setMessage({ text: 'Failed to read text file.', type: 'error' });
+                    };
+                    reader.readAsText(file);
+                } else if (fileType === 'docx') {
+                    const reader = new FileReader();
+                    reader.onload = (event) => {
+                        mammoth.extractRawText({ arrayBuffer: event.target.result })
+                            .then(result => {
+                                setFileContent(result.value);
+                                setMessage({ text: `File "${file.name}" loaded successfully.`, type: 'success' });
+                            })
+                            .catch(err => {
+                                setFileContent('');
+                                setMessage({ text: 'Failed to read DOCX file.', type: 'error' });
+                                console.error('DOCX parsing error:', err);
+                            });
+                    };
+                    reader.readAsArrayBuffer(file);
+                } else if (fileType === 'pdf') {
+                    setMessage({ text: 'For PDFs, please copy the text and paste it into the box below. Direct file upload for PDFs is not supported for this simple application.', type: 'info' });
+                    setFileContent('');
+                    e.target.value = null;
+                } else {
+                    setMessage({ text: 'Unsupported file format. Please upload a .txt or .docx file.', type: 'warning' });
+                    setFileContent('');
+                    e.target.value = null;
+                }
+            };
+
+            const handleGenerateSummary = async () => {
+                const textToSummarize = fileContent || transcript;
+                if (!textToSummarize || !prompt) {
+                    setMessage({ text: 'Please provide a transcript (by pasting or uploading) and a prompt.', type: 'warning' });
+                    return;
+                }
+                
+                let combinedPrompt = prompt;
+                if (wordCount && !isNaN(wordCount) && parseInt(wordCount) > 0) {
+                    combinedPrompt += ` The summary should be approximately ${wordCount} words.`;
+                }
+
+                setLoading(true);
+                setMessage({ text: 'Generating summary...', type: 'info' });
+
+                try {
+                    const response = await fetch(`${BACKEND_URL}/summarize`, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({ transcript: textToSummarize, prompt: combinedPrompt }),
+                    });
+
+                    if (!response.ok) {
+                        const errorData = await response.json();
+                        throw new Error(errorData.error || 'Failed to generate summary.');
+                    }
+
+                    const data = await response.json();
+                    setSummary(data.summary);
+                    setMessage({ text: 'Summary generated successfully!', type: 'success' });
+                } catch (error) {
+                    console.error('Error generating summary:', error);
+                    setMessage({ text: `Error: ${error.message}`, type: 'error' });
+                } finally {
+                    setLoading(false);
+                }
+            };
+
+            const handleShareSummary = async () => {
+                if (!summary || !recipients) {
+                    setMessage({ text: 'Please generate a summary and enter at least one recipient email.', type: 'warning' });
+                    return;
+                }
+
+                const recipientArray = recipients.split(',').map(email => email.trim()).filter(email => email);
+                if (recipientArray.length === 0) {
+                    setMessage({ text: 'Please enter at least one valid recipient email.', type: 'warning' });
+                    return;
+                }
+
+                setLoading(true);
+                setMessage({ text: 'Sending email...', type: 'info' });
+
+                try {
+                    const response = await fetch(`${BACKEND_URL}/share`, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({ summary, recipients: recipientArray }),
+                    });
+
+                    if (!response.ok) {
+                        const errorData = await response.json();
+                        throw new Error(errorData.error || 'Failed to share summary.');
+                    }
+
+                    setMessage({ text: 'Summary shared successfully!', type: 'success' });
+                } catch (error) {
+                    console.error('Error sharing summary:', error);
+                    setMessage({ text: `Error: ${error.message}`, type: 'error' });
+                } finally {
+                    setLoading(false);
+                }
+            };
+
+            const handleDownloadTxt = () => {
+                if (!summary) {
+                    setMessage({ text: 'No summary to download.', type: 'warning' });
+                    return;
+                }
+                const blob = new Blob([summary], { type: 'text/plain' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'meeting_notes_summary.txt';
+                a.click();
+                URL.revokeObjectURL(url);
+                setMessage({ text: 'Summary downloaded as a text file.', type: 'success' });
+            };
+
+            const handleDownloadPdf = () => {
+                if (!summary) {
+                    setMessage({ text: 'No summary to download.', type: 'warning' });
+                    return;
+                }
+                const doc = new jsPDF();
+                const margin = 10;
+                const maxWidth = doc.internal.pageSize.getWidth() - 2 * margin;
+                const lines = doc.splitTextToSize(summary, maxWidth);
+                doc.text(lines, margin, margin);
+                doc.save('meeting_notes_summary.pdf');
+                setMessage({ text: 'Summary downloaded as a PDF file.', type: 'success' });
+            };
+            
+            const getMessageStyle = () => {
+                switch (message.type) {
+                    case 'success':
+                        return 'bg-green-100 text-green-800';
+                    case 'error':
+                        return 'bg-red-100 text-red-800';
+                    case 'warning':
+                        return 'bg-yellow-100 text-yellow-800';
+                    case 'info':
+                    default:
+                        return 'bg-blue-100 text-blue-800';
+                }
+            };
+
+            return (
+                <div className="bg-white p-8 rounded-lg shadow-2xl w-full max-w-4xl space-y-8">
+                    <h1 className="text-4xl font-extrabold text-center text-gray-900 tracking-tight">
+                        AI Meeting Notes Summarizer
+                    </h1>
+                    <p className="text-center text-gray-500 text-lg">
+                        Summarize your meeting transcripts and share them effortlessly.
+                    </p>
+
+                    <div className="flex flex-col md:flex-row gap-8">
+                        {/* Input Section */}
+                        <div className="flex-1 space-y-6 p-6 border border-gray-200 rounded-lg bg-gray-50">
+                            <h2 className="text-2xl font-bold text-gray-800">1. Transcribe or Upload</h2>
+                            <label htmlFor="file-upload" className="block text-sm font-medium text-gray-700">
+                                Upload Transcript File (.txt, .docx)
+                            </label>
+                            <input
+                                type="file"
+                                id="file-upload"
+                                accept=".txt,.docx"
+                                className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 transition duration-150 ease-in-out cursor-pointer"
+                                onChange={handleFileChange}
+                            />
+                            <div className="text-center text-gray-400 text-sm">-- OR --</div>
+                            <label htmlFor="transcript" className="block text-sm font-medium text-gray-700">
+                                Paste Transcript Text
+                            </label>
+                            <textarea
+                                id="transcript"
+                                className="w-full h-48 p-4 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 transition duration-300 resize-none font-mono text-sm"
+                                placeholder="Paste your meeting notes or call transcript here..."
+                                value={fileContent || transcript}
+                                onChange={(e) => {
+                                    setTranscript(e.target.value);
+                                    setFileContent('');
+                                }}
+                            />
+                            <label htmlFor="prompt" className="block text-sm font-medium text-gray-700">
+                                Custom AI Prompt
+                            </label>
+                            <input
+                                type="text"
+                                id="prompt"
+                                className="w-full p-3 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 transition duration-300"
+                                placeholder="e.g., 'Summarize in bullet points for executives'"
+                                value={prompt}
+                                onChange={(e) => setPrompt(e.target.value)}
+                            />
+                            <label htmlFor="word-count" className="block text-sm font-medium text-gray-700">
+                                Approximate Word Count (Optional)
+                            </label>
+                            <input
+                                type="number"
+                                id="word-count"
+                                className="w-full p-3 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 transition duration-300"
+                                placeholder="e.g., 50"
+                                value={wordCount}
+                                onChange={(e) => setWordCount(e.target.value)}
+                            />
+                            <button
+                                onClick={handleGenerateSummary}
+                                className="w-full p-3 bg-blue-600 text-white font-semibold rounded-lg shadow-md hover:bg-blue-700 transition duration-300 ease-in-out disabled:bg-gray-400 disabled:cursor-not-allowed"
+                                disabled={loading}
+                            >
+                                {loading ? 'Generating...' : 'Generate Summary'}
+                            </button>
+                        </div>
+
+                        {/* Output Section */}
+                        <div className="flex-1 space-y-6 p-6 border border-gray-200 rounded-lg bg-white">
+                            <h2 className="text-2xl font-bold text-gray-800">2. Review & Share</h2>
+                            <label htmlFor="summary" className="block text-sm font-medium text-gray-700">
+                                Generated Summary (Editable)
+                            </label>
+                            <textarea
+                                id="summary"
+                                className="w-full h-48 p-4 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-green-500 transition duration-300 resize-none font-sans text-sm"
+                                placeholder="Your summary will appear here..."
+                                value={summary}
+                                onChange={(e) => setSummary(e.target.value)}
+                            />
+                            <div className="flex gap-4">
+                                <button
+                                    onClick={handleDownloadTxt}
+                                    className="flex-1 p-3 bg-gray-500 text-white font-semibold rounded-lg shadow-md hover:bg-gray-600 transition duration-300 disabled:bg-gray-400 disabled:cursor-not-allowed"
+                                    disabled={!summary}
+                                >
+                                    Download as Text
+                                </button>
+                                <button
+                                    onClick={handleDownloadPdf}
+                                    className="flex-1 p-3 bg-red-600 text-white font-semibold rounded-lg shadow-md hover:bg-red-700 transition duration-300 disabled:bg-gray-400 disabled:cursor-not-allowed"
+                                    disabled={!summary}
+                                >
+                                    Download as PDF
+                                </button>
+                            </div>
+                            <div className="border-t border-gray-200 pt-6">
+                                <label htmlFor="recipients" className="block text-sm font-medium text-gray-700">
+                                    Share via Email (Comma-separated)
+                                </label>
+                                <input
+                                    type="text"
+                                    id="recipients"
+                                    className="w-full p-3 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-purple-500 transition duration-300"
+                                    placeholder="recipient1@email.com, recipient2@email.com"
+                                    value={recipients}
+                                    onChange={(e) => setRecipients(e.target.value)}
+                                />
+                                <button
+                                    onClick={handleShareSummary}
+                                    className="w-full mt-4 p-3 bg-purple-600 text-white font-semibold rounded-lg shadow-md hover:bg-purple-700 transition duration-300 ease-in-out disabled:bg-gray-400 disabled:cursor-not-allowed"
+                                    disabled={loading}
+                                >
+                                    Share Summary
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                    {message && (
+                        <div className={`text-center p-4 rounded-lg font-medium shadow-sm transition-all duration-300 ease-in-out ${getMessageStyle()}`}>
+                            {message.text}
+                        </div>
+                    )}
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
